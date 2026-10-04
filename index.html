@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlipTracker SYNC</title>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script src="https://apis.google.com/js/api.js"></script>
+<style>
+*{box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,sans-serif}
+body{margin:0;background:#09090b;color:#fafafa;min-height:100vh}
+header{padding:20px 24px;border-bottom:1px solid #27272a;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+h1{margin:0;font-size:28px;letter-spacing:-0.02em}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#052e1a;border:1px solid #14532d;color:#4ade80;margin-left:8px;vertical-align:middle}
+.btn{border:0;padding:10px 16px;border-radius:12px;font-weight:600;font-size:13px;cursor:pointer}
+.btn-white{background:#fff;color:#000}
+.btn-dark{background:#27272a;color:#fff;border:1px solid #3f3f46}
+.btn-dark:hover{background:#3f3f46}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:24px}
+.card{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:16px}
+.label{font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#71717a}
+.value{font-size:24px;font-weight:700;margin-top:4px}
+.sub{font-size:12px;color:#71717a;margin-top:2px}
+.form{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:20px;margin:0 24px 24px;display:none}
+.form.show{display:block}
+input,select{width:100%;background:#27272a;border:1px solid #3f3f46;border-radius:12px;padding:12px;font-size:14px;color:#fff;margin-bottom:10px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.list{padding:0 24px 100px;display:flex;flex-direction:column;gap:8px}
+.item{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:14px;display:flex;justify-content:space-between;align-items:center}
+.item.sold{border-color:#14532d}
+.empty{border:1px dashed #27272a;border-radius:16px;padding:40px;text-align:center;color:#71717a;margin:0 24px}
+#status{font-size:12px}
+</style>
+</head>
+<body>
+<header>
+<div>
+<h1>FlipTracker <span class="badge">SYNC FIXED</span></h1>
+<div id="status" style="color:#71717a;font-family:monospace;font-size:11px;margin-top:4px">Client ID: 418519359458... ✅ FIXED • Ready</div>
+</div>
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<span id="conn" style="color:#4ade80;font-size:12px;display:none">● Connected to Drive</span>
+<button class="btn btn-dark" id="connectBtn">Connect Drive</button>
+<button class="btn btn-dark" id="saveBtn">Save to Drive</button>
+<button class="btn btn-dark" id="loadBtn">Load</button>
+<button class="btn btn-white" id="addBtn">+ Add Flip</button>
+</div>
+</header>
+
+<div class="grid">
+<div class="card"><div class="label">Total Profit</div><div class="value" id="profit">$0.00</div></div>
+<div class="card"><div class="label">Items Sold / Total</div><div class="value" id="sold">0</div><div class="sub" id="total">0 total</div></div>
+<div class="card"><div class="label">Inventory Value</div><div class="value" id="invVal">$0.00</div><div class="sub" id="invCount">0 items</div></div>
+<div class="card"><div class="label">Total Sales</div><div class="value" id="sales">$0.00</div></div>
+</div>
+
+<div class="form" id="form">
+<h3 style="margin:0 0 12px">Add New Flip</h3>
+<div class="row"><input id="f_name" placeholder="Item Name (e.g. Nike Dunks Size 10)"><select id="f_status"><option value="inventory">In Inventory</option><option value="sold">Sold</option><option value="listed">Listed</option></select></div>
+<div class="row"><input id="f_buy" type="number" placeholder="Buy Price"><input id="f_sell" type="number" placeholder="Sell Price"></div>
+<div class="row"><input id="f_fees" type="number" placeholder="Fees"><input id="f_ship" type="number" placeholder="Shipping"></div>
+<input id="f_notes" placeholder="Notes / Category">
+<button class="btn btn-white" style="width:100%;margin-top:8px" id="submitBtn">Add to Tracker</button>
+</div>
+
+<div class="list" id="list"></div>
+
+<script>
+const CLIENT_ID = "418519359458-n3t0tsul2j3ijgobrhuee1mvd2qn5qoj.apps.googleusercontent.com";
+const SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata";
+let tokenClient, accessToken = localStorage.getItem('ft_token');
+let items = [];
+try{ items = JSON.parse(localStorage.getItem('ft_items')||'[]'); }catch{ items=[]; }
+
+function saveLocal(){ localStorage.setItem('ft_items', JSON.stringify(items)); render(); }
+
+function initGapi(){ if(window.gapi) gapi.load('client', async()=>{ await gapi.client.init({discoveryDocs:['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']}); }); }
+function initGis(){ if(window.google) tokenClient = google.accounts.oauth2.initTokenClient({ client_id: CLIENT_ID, scope: SCOPES, callback:(resp)=>{ if(resp.error){ alert('Auth failed'); return; } accessToken=resp.access_token; localStorage.setItem('ft_token',accessToken); updateConn(); } }); }
+
+window.addEventListener('load', ()=>{ setTimeout(()=>{ initGapi(); initGis(); updateConn(); }, 800); });
+
+function updateConn(){
+  const c = document.getElementById('conn');
+  const b = document.getElementById('connectBtn');
+  if(accessToken){ c.style.display='inline'; b.textContent='Reconnect'; b.style.display='none'; }
+  else{ c.style.display='none'; b.style.display='inline-block'; b.textContent='Connect Drive'; }
+}
+
+document.getElementById('connectBtn').onclick = ()=>{
+  if(!tokenClient){ alert('Google still loading, wait 2 sec and click again'); initGis(); return; }
+  tokenClient.requestAccessToken();
+};
+document.getElementById('addBtn').onclick = ()=>{ document.getElementById('form').classList.toggle('show'); };
+document.getElementById('submitBtn').onclick = ()=>{
+  const name = document.getElementById('f_name').value.trim();
+  const buy = parseFloat(document.getElementById('f_buy').value)||0;
+  if(!name || !buy){ alert('Name + Buy price required'); return; }
+  const obj = { id: Date.now().toString(), name, buy, sell: parseFloat(document.getElementById('f_sell').value)||0, fees: parseFloat(document.getElementById('f_fees').value)||0, ship: parseFloat(document.getElementById('f_ship').value)||0, status: document.getElementById('f_status').value, notes: document.getElementById('f_notes').value, date: new Date().toISOString() };
+  items.unshift(obj); document.getElementById('form').classList.remove('show'); document.getElementById('f_name').value=''; document.getElementById('f_buy').value=''; document.getElementById('f_sell').value=''; document.getElementById('f_fees').value=''; document.getElementById('f_ship').value=''; document.getElementById('f_notes').value=''; saveLocal();
+};
+
+async function ensureFolder(){
+  const q = "mimeType='application/vnd.google-apps.folder' and name='FlipTracker' and trashed=false";
+  const r = await gapi.client.drive.files.list({q, fields:'files(id)'});
+  if(r.result.files.length) return r.result.files[0].id;
+  const c = await gapi.client.drive.files.create({resource:{name:'FlipTracker', mimeType:'application/vnd.google-apps.folder'}, fields:'id'});
+  return c.result.id;
+}
+document.getElementById('saveBtn').onclick = async()=>{
+  if(!accessToken){ document.getElementById('connectBtn').click(); return; }
+  try{
+    const folderId = await ensureFolder();
+    const q = `'${folderId}' in parents and name='fliptracker_data.json' and trashed=false`;
+    const list = await gapi.client.drive.files.list({q, fields:'files(id)'});
+    const blob = new Blob([JSON.stringify({items, updated:new Date().toISOString()})], {type:'application/json'});
+    const meta = {name:'fliptracker_data.json', parents:[folderId]};
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(meta)], {type:'application/json'}));
+    form.append('file', blob);
+    if(list.result.files.length){
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${list.result.files[0].id}?uploadType=multipart`,{method:'PATCH', headers:{Authorization:`Bearer ${accessToken}`}, body:form});
+    } else {
+      await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',{method:'POST', headers:{Authorization:`Bearer ${accessToken}`}, body:form});
+    }
+    alert('✅ Saved '+items.length+' items to Google Drive / FlipTracker');
+  }catch(e){ alert('Save failed: '+e.message); }
+};
+document.getElementById('loadBtn').onclick = async()=>{
+  if(!accessToken){ document.getElementById('connectBtn').click(); return; }
+  try{
+    const folderId = await ensureFolder();
+    const q = `'${folderId}' in parents and name='fliptracker_data.json' and trashed=false`;
+    const list = await gapi.client.drive.files.list({q, fields:'files(id)'});
+    if(!list.result.files.length){ alert('No backup found yet - click Save to create one'); return; }
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${list.result.files[0].id}?alt=media`,{headers:{Authorization:`Bearer ${accessToken}`}});
+    const data = await res.json();
+    if(data.items){ items=data.items; saveLocal(); alert('✅ Loaded '+items.length+' items'); }
+  }catch(e){ alert('Load failed: '+e.message); }
+};
+
+function render(){
+  const soldItems = items.filter(i=>i.status==='sold');
+  const invItems = items.filter(i=>i.status!=='sold');
+  const totalSell = soldItems.reduce((s,i)=>s+(i.sell||0),0);
+  const totalFees = soldItems.reduce((s,i)=>s+(i.fees||0)+(i.ship||0),0);
+  const totalBuySold = soldItems.reduce((s,i)=>s+(i.buy||0),0);
+  const profit = totalSell - totalBuySold - totalFees;
+  const invVal = invItems.reduce((s,i)=>s+(i.buy||0),0);
+  document.getElementById('profit').textContent='$'+profit.toFixed(2);
+  document.getElementById('profit').style.color = profit>=0?'#4ade80':'#f87171';
+  document.getElementById('sold').textContent=soldItems.length;
+  document.getElementById('total').textContent=items.length+' total';
+  document.getElementById('invVal').textContent='$'+invVal.toFixed(2);
+  document.getElementById('invCount').textContent=invItems.length+' items';
+  document.getElementById('sales').textContent='$'+totalSell.toFixed(2);
+  const list = document.getElementById('list');
+  if(items.length===0){ list.innerHTML='<div class="empty">No flips yet. Click "+ Add Flip" to start.<br><span style="font-size:11px">Data saves locally + to Google Drive</span></div>'; return; }
+  list.innerHTML = items.map(it=>{
+    const p = (it.sell||0)-(it.buy||0)-(it.fees||0)-(it.ship||0);
+    const isSold = it.status==='sold';
+    return `<div class="item ${isSold?'sold':''}"><div><div style="font-weight:500">${it.name} ${isSold?'<span style="font-size:10px;background:#052e1a;border:1px solid #14532d;color:#4ade80;padding:2px 6px;border-radius:99px;margin-left:6px">SOLD</span>':''}</div><div style="font-size:12px;color:#71717a;margin-top:2px;font-family:monospace">Buy $${it.buy} → Sell $${it.sell||0} | Fees $${it.fees||0} + Ship $${it.ship||0} = ${isSold?'<span style="color:'+(p>=0?'#4ade80':'#f87171')+'">Profit $'+p.toFixed(2)+'</span>':'In Inventory'}</div></div><div style="display:flex;gap:6px"><button onclick="toggle('${it.id}')" class="btn btn-dark" style="padding:6px 10px;font-size:11px">${isSold?'Inventory':'Sold'}</button><button onclick="del('${it.id}')" style="background:none;border:0;color:#52525b;cursor:pointer">✕</button></div></div>`;
+  }).join('');
+}
+window.toggle = (id)=>{ items = items.map(i=> i.id===id ? {...i, status: i.status==='sold'?'inventory':'sold'}:i); saveLocal(); };
+window.del = (id)=>{ if(confirm('Delete?')){ items=items.filter(i=>i.id!==id); saveLocal(); } };
+render();
+</script>
+</body>
+</html>
