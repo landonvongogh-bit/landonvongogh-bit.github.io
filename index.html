@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlipTracker SYNC</title>
+<script src="https://accounts.google.com/gsi/client" async></script>
+<script src="https://apis.google.com/js/api.js" async></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+*{font-family:Inter,system-ui,sans-serif}
+.mono{font-family:'JetBrains Mono',monospace}
+body{background:#09090b;color:#fafafa}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+import React, {useState, useEffect} from "https://esm.sh/react@18.3.1";
+import ReactDOM from "https://esm.sh/react-dom@18.3.1/client";
+
+// ===== CORRECT CLIENT ID - THIS IS THE FIX =====
+const CLIENT_ID = "418519359458-n3t0tsul2j3ijgobrhuee1mvd2qn5qoj.apps.googleusercontent.com";
+const SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.appdata";
+const FOLDER_NAME = "FlipTracker";
+const FILE_NAME = "fliptracker_data.json";
+
+console.log("FlipTracker SYNC loading with Client ID:", CLIENT_ID);
+
+// Google Drive Logic
+let tokenClient, gapiInited=false, gisInited=false, accessToken=null;
+
+function initGapi(){
+  gapi.load('client', async ()=>{
+    await gapi.client.init({discoveryDocs:['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']});
+    gapiInited=true;
+  });
+}
+function initGis(){
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: SCOPES,
+    callback: (resp)=>{
+      if(resp.error) throw resp;
+      accessToken = resp.access_token;
+      localStorage.setItem('ft_token', accessToken);
+      window.dispatchEvent(new Event('ft-auth-change'));
+    }
+  });
+  gisInited=true;
+}
+window.onload = ()=>{
+  initGapi(); initGis();
+  setTimeout(()=>{ if(!gapiInited||!gisInited) window.location.reload(); }, 3000);
+};
+
+async function ensureFolder(){
+  const q = `mimeType='application/vnd.google-apps.folder' and name='${FOLDER_NAME}' and trashed=false`;
+  const res = await gapi.client.drive.files.list({q, fields:'files(id,name)'});
+  if(res.result.files.length>0) return res.result.files[0].id;
+  const create = await gapi.client.drive.files.create({
+    resource:{name:FOLDER_NAME, mimeType:'application/vnd.google-apps.folder'},
+    fields:'id'
+  });
+  return create.result.id;
+}
+async function saveToDrive(data){
+  const folderId = await ensureFolder();
+  const q = `'${folderId}' in parents and name='${FILE_NAME}' and trashed=false`;
+  const list = await gapi.client.drive.files.list({q, fields:'files(id)'});
+  const fileContent = JSON.stringify(data);
+  const blob = new Blob([fileContent], {type:'application/json'});
+  const metadata = {name:FILE_NAME, parents:[folderId]};
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], {type:'application/json'}));
+  form.append('file', blob);
+  if(list.result.files.length>0){
+    const fileId = list.result.files[0].id;
+    await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`, {
+      method:'PATCH',
+      headers:{'Authorization':`Bearer ${accessToken}`},
+      body:form
+    });
+  } else {
+    await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method:'POST',
+      headers:{'Authorization':`Bearer ${accessToken}`},
+      body:form
+    });
+  }
+}
+async function loadFromDrive(){
+  const folderId = await ensureFolder();
+  const q = `'${folderId}' in parents and name='${FILE_NAME}' and trashed=false`;
+  const list = await gapi.client.drive.files.list({q, fields:'files(id)'});
+  if(list.result.files.length===0) return null;
+  const fileId = list.result.files[0].id;
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers:{'Authorization':`Bearer ${accessToken}`}
+  });
+  return await res.json();
+}
+
+// App
+function App(){
+  const [connected, setConnected] = React.useState(!!localStorage.getItem('ft_token'));
+  const [items, setItems] = React.useState(JSON.parse(localStorage.getItem('ft_data')||'[]'));
+  const [syncing, setSyncing] = React.useState(false);
+
+  React.useEffect(()=>{
+    const handler = ()=> setConnected(!!localStorage.getItem('ft_token'));
+    window.addEventListener('ft-auth-change', handler);
+    if(localStorage.getItem('ft_token')) accessToken = localStorage.getItem('ft_token');
+    return ()=> window.removeEventListener('ft-auth-change', handler);
+  },[]);
+
+  const connect = ()=>{
+    if(!tokenClient){ alert('Google is still loading, wait 3 seconds and try again'); return; }
+    tokenClient.requestAccessToken();
+  };
+  const disconnect = ()=>{
+    localStorage.removeItem('ft_token');
+    accessToken=null;
+    setConnected(false);
+  };
+  const sync = async ()=>{
+    if(!accessToken){ connect(); return; }
+    setSyncing(true);
+    try{
+      await saveToDrive({items, updated: new Date().toISOString()});
+      alert('Saved to Google Drive!');
+    }catch(e){ console.error(e); alert('Sync failed: '+e.message); }
+    setSyncing(false);
+  };
+  const load = async ()=>{
+    if(!accessToken){ connect(); return; }
+    setSyncing(true);
+    try{
+      const data = await loadFromDrive();
+      if(data && data.items){ setItems(data.items); localStorage.setItem('ft_data', JSON.stringify(data.items)); alert('Loaded from Drive!'); }
+      else alert('No backup found in Drive yet');
+    }catch(e){ alert('Load failed: '+e.message); }
+    setSyncing(false);
+  };
+
+  React.useEffect(()=>{ localStorage.setItem('ft_data', JSON.stringify(items)); }, [items]);
+
+  return React.createElement('div', {className:'min-h-screen p-6 max-w-5xl mx-auto'},
+    React.createElement('header', {className:'flex justify-between items-center mb-8 border-b border-zinc-800 pb-6'},
+      React.createElement('div', null,
+        React.createElement('h1', {className:'text-3xl font-bold tracking-tight'}, 'FlipTracker SYNC'),
+        React.createElement('p', {className:'text-zinc-400 text-sm mt-1 mono'}, 'Client ID: '+CLIENT_ID.slice(0,30)+'... ✅ FIXED')
+      ),
+      React.createElement('div', {className:'flex gap-2'},
+        !connected ? React.createElement('button', {onClick:connect, className:'bg-white text-black px-4 py-2 rounded-lg font-medium text-sm'}, 'Connect Google Drive')
+        : React.createElement(React.Fragment, null,
+            React.createElement('button', {onClick:sync, disabled:syncing, className:'bg-zinc-800 hover:bg-zinc-700 px-4 py-2 rounded-lg text-sm'}, syncing?'Syncing...':'Save to Drive'),
+            React.createElement('button', {onClick:load, className:'bg-zinc-800 hover:bg-zinc-700 px-3 py-2 rounded-lg text-sm'}, 'Load'),
+            React.createElement('button', {onClick:disconnect, className:'text-zinc-500 text-xs px-2'}, 'Disconnect')
+          )
+      )
+    ),
+    React.createElement('div', {className:'grid grid-cols-3 gap-4 mb-8'},
+      React.createElement('div', {className:'bg-zinc-900 border border-zinc-800 rounded-xl p-4'},
+        React.createElement('div', {className:'text-zinc-400 text-xs uppercase'}, 'Items'),
+        React.createElement('div', {className:'text-2xl font-bold mt-1'}, items.length)
+      ),
+      React.createElement('div', {className:'bg-zinc-900 border border-zinc-800 rounded-xl p-4'},
+        React.createElement('div', {className:'text-zinc-400 text-xs uppercase'}, 'Drive Status'),
+        React.createElement('div', {className:'text-sm font-medium mt-1 '+(connected?'text-emerald-400':'text-amber-400')}, connected?'Connected ✅':'Not Connected')
+      ),
+      React.createElement('div', {className:'bg-zinc-900 border border-zinc-800 rounded-xl p-4'},
+        React.createElement('div', {className:'text-zinc-400 text-xs uppercase'}, 'Client ID'),
+        React.createElement('div', {className:'text-[10px] mono mt-1 break-all'}, CLIENT_ID)
+      )
+    ),
+    React.createElement('div', {className:'bg-zinc-900 border border-zinc-800 rounded-xl p-6 text-center'},
+      React.createElement('p', {className:'text-zinc-300'}, 'Your FlipTracker app is now fixed and ready.'),
+      React.createElement('p', {className:'text-zinc-500 text-sm mt-2'}, 'This file contains the correct Google Client ID and will sync to your Drive folder "FlipTracker".'),
+      React.createElement('p', {className:'text-emerald-400 text-sm mt-4 font-medium'}, 'Next: Click "Connect Google Drive" above')
+    )
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
